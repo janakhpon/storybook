@@ -7,7 +7,7 @@ import globToRegexp from 'glob-to-regexp';
 
 import { create } from './entrypointsPlugin';
 
-import { StorybookConfig, ConfigPrefix, ServerConfig, PresetFn } from '../types';
+import { Preset } from '../types/config';
 
 const ensureEntryIsObject = async (
   entry:
@@ -31,125 +31,83 @@ const ensureEntryIsObject = async (
   return r;
 };
 
-const createStorybookEntryPreset = (
-  type: ConfigPrefix,
-  config: StorybookConfig
-): PresetFn => async () => {
-  switch (type) {
-    case 'manager': {
-      return {
-        managerWebpack: async (base, env) => {
-          const { plugin, entries } = create(config.entries, {});
+const storybookEntryPreset: Preset = {
+  managerWebpack: async (base, config) => {
+    const { plugin, entries } = create(await config.entries, {});
 
-          const rule = {
-            use: require.resolve('../manager/webpack-loader'),
-            test: config.entries.map(globToRegexp),
-          };
+    const rule = {
+      use: require.resolve('../manager/webpack-loader'),
+      test: (await config.entries).map(i => globToRegexp(i)),
+    };
 
-          const entry = await entries();
+    const entry = await entries();
 
-          return webpackMerge(base, {
-            entry,
-            module: {
-              rules: [rule],
-            },
-            plugins: [plugin],
-          });
-        },
-      };
-    }
-    case 'preview': {
-      return {};
-    }
-    default: {
-      return {};
-    }
-  }
+    return webpackMerge(base, {
+      entry,
+      module: {
+        rules: [rule],
+      },
+      plugins: [plugin],
+    });
+  },
 };
 
-const createWebpackServePreset = (
-  type: ConfigPrefix,
-  serverConfig: ServerConfig
-): PresetFn => async () => {
-  if (type === 'manager') {
-    return {
-      managerWebpack: async webpackConfig => {
-        const host = serverConfig.host || 'localhost';
-        const port = serverConfig.devPorts.manager || 555550;
+const webpackServePreset: Preset = {
+  managerWebpack: async (base, config) => {
+    const { host, devPorts } = await config.server;
+    const port = devPorts.manager;
 
-        await killPort(port, 'tcp');
+    await killPort(port, 'tcp');
 
-        // eslint-disable-next-line no-param-reassign
-        webpackConfig.entry = await ensureEntryIsObject(webpackConfig.entry);
-
-        return webpackMerge(webpackConfig, {
-          entry: {
-            hmr: ['webpack-plugin-serve/client'],
+    return webpackMerge(base, {
+      entry: {
+        hmr: ['webpack-plugin-serve/client'],
+      },
+      plugins: [
+        new WebpackPluginServe({
+          static: base.output.path,
+          client: {
+            address: `${host}:${port}`,
+            silent: true,
           },
-          plugins: [
-            new WebpackPluginServe({
-              static: webpackConfig.output.path,
-              client: {
-                address: `${host}:${port}`,
-                silent: true,
-              },
-              // this injects quite a bit UI I don't like, would love to build something custom based on this
-              // https://github.com/shellscape/webpack-plugin-serve/blob/master/lib/client/client.js
-              status: true,
-              progress: true,
-              host,
-              port,
-              // open: true,
-              log: { level: 'error', timestamp: false },
-              hmr: true,
-              compress: true,
-            }),
-          ],
-        });
-      },
-    };
-  }
-  if (type === 'preview') {
-    return {};
-  }
-  return {};
+          // TODO:
+          // this injects quite a bit UI I don't like, would love to build something custom based on this
+          // https://github.com/shellscape/webpack-plugin-serve/blob/master/lib/client/client.js
+          status: true,
+          progress: true,
+          host,
+          port,
+          // open: true,
+          log: { level: 'error', timestamp: false },
+          hmr: true,
+          compress: true,
+        }),
+      ],
+    });
+  },
 };
 
-const createWebpackReporterPreset = (
-  type: ConfigPrefix,
-  reporter: Reporter
-): PresetFn => async () => {
-  if (type === 'manager') {
-    return {
-      managerWebpack: async webpackConfig => {
-        // eslint-disable-next-line no-param-reassign
-        webpackConfig.entry = await ensureEntryIsObject(webpackConfig.entry);
-
-        return webpackMerge(webpackConfig, {
-          plugins: [
-            new WebpackBar({
-              name: type,
-              color: 'hotpink',
-              profile: false,
-              fancy: false,
-              basic: false,
-              reporter,
-              reporters: [],
-            }),
-          ],
-        });
-      },
-    };
-  }
-  if (type === 'preview') {
-    return {};
-  }
-  return {};
-};
+const createWebpackReporterPreset = (reporter: Reporter): Preset => ({
+  managerWebpack: base => {
+    return webpackMerge(base, {
+      plugins: [
+        new WebpackBar({
+          name: 'manager',
+          color: 'hotpink',
+          profile: false,
+          fancy: false,
+          basic: false,
+          reporter,
+          reporters: [],
+        }),
+      ],
+    });
+  },
+});
 
 export {
   ensureEntryIsObject,
-  createWebpackServePreset,
+  webpackServePreset,
+  storybookEntryPreset,
   createWebpackReporterPreset,
-  createStorybookEntryPreset,
 };

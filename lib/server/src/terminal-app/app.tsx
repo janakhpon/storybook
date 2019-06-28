@@ -2,22 +2,22 @@ import React, { Component, Fragment } from 'react';
 import { Static, render, Box, Text, Color } from 'ink';
 import EventEmitter from 'eventemitter3';
 
-import { ProgressDescription, State, Status } from '../types';
+import { ProgressDescription, State, Status, Runner } from '../types/runner';
 
-import { Banner } from '../banner/banner';
-import { Progressing, Completed } from './progress';
+import { Banner } from './banner/banner';
+import { Progressing, Completed } from './progress/progress';
 
 interface Props {
   activities: {
-    [name: string]: () => EventEmitter;
+    [name: string]: Runner;
   };
 }
 
-const reporter = (type: string, status: Status, ctx: Component<Props, Partial<State>>) => (
+const reporter = (key: string, status: Status, ctx: Component<Props, Partial<State>>) => (
   data: ProgressDescription
 ) => {
   ctx.setState({
-    [type]: {
+    [key]: {
       ...data,
       status,
     },
@@ -28,11 +28,12 @@ class App extends Component<Props, Partial<State>> {
   constructor(props: Props) {
     super(props);
 
-    Object.entries(props.activities).forEach(([type, init]) => {
-      const activity = init();
-      activity.on('progress', reporter(type, 'progress', this));
-      activity.on('success', reporter(type, 'success', this));
-      activity.on('failure', reporter(type, 'failure', this));
+    Object.entries(props.activities).forEach(([key, { start, listen }]) => {
+      start();
+
+      ['progress', 'success', 'failure'].forEach((type: Status) => {
+        listen(type, reporter(key, type, this));
+      });
     });
 
     this.state = Object.keys(props.activities).reduce((acc, k) => {

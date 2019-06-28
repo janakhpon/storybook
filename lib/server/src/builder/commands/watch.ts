@@ -1,126 +1,102 @@
-import webpack from 'webpack';
-import WebpackBar, { State } from 'webpackbar';
-
 import setTitle from 'node-bash-title';
-import {
-  createWebpackServePreset,
-  createWebpackReporterPreset,
-  createStorybookEntryPreset,
-} from '../../utils/webpack';
+import webpack from 'webpack';
 
-import { applyPresets, getPresets } from '../../presets';
-import { createBuildConfig } from '../../config';
-import { merge } from '../../utils/merge';
+import { reportError, reportStats, reportProgress, reportSuccess } from '../../utils/ipc';
 
-import {
-  BuildConfig,
-  CallOptions,
-  CliOptions,
-  ConfigPrefix,
-  EnvironmentType,
-  StorybookConfig,
-  ConfigsFiles,
-} from '../../types';
+import { RunParams } from '../../types/runner';
+import { WebpackConfig } from '../../types/webpack';
+import { Config } from '../../types/config';
+import { ConfigPrefix } from '../../types/cli';
 
-const statOptions = {
-  all: false,
-  modules: true,
-  maxModules: 0,
-  errors: true,
-  warnings: true,
-  moduleTrace: true,
-  errorDetails: true,
-  context: process.cwd(),
+import { getConfig } from '../../config/config';
+
+const getWebpackConfig = async (type: ConfigPrefix, config: Config) => {
+  switch (type) {
+    case 'manager': {
+      return config.managerWebpack;
+    }
+    case 'preview': {
+      return config.webpack;
+    }
+    default: {
+      throw new Error('not supported type, specify "manager" or "preview"');
+    }
+  }
 };
 
-const reportProgress = (data: Partial<State>) => process.send({ type: 'progress', data });
-const reportSuccess = (stats: webpack.Stats) =>
-  process.send({ type: 'success', data: stats.toJson(statOptions) });
-const reportError = (err: Error, stats?: webpack.Stats) =>
-  process.send({
-    type: 'failure',
-    data: stats ? stats.toJson(statOptions) : { message: err.message, detail: [err] },
-  });
+let watcher: webpack.Watching;
 
-const watch = async (
-  env: EnvironmentType,
-  config: BuildConfig
-): Promise<webpack.Watching | null> => {
+const watcherOptions: webpack.ICompiler.WatchOptions = {
+  aggregateTimeout: 10,
+};
+
+const watcherHandler: webpack.ICompiler.Handler = (err, stats) => {
+  // Stats Object
+  // Print watch/build result here...
+  if (err) {
+    reportStats(stats);
+    reportError(err);
+    return;
+  }
+  if (stats) {
+    reportStats(stats);
+    reportSuccess({ message: 'successful compilation' });
+  }
+};
+
+const watch = async (webpackConfig: WebpackConfig): Promise<webpack.Watching | null> => {
+  console.dir({ webpackConfig }, { depth: 20 });
   try {
-    const webpackConfig = await config.webpack({}, env);
-    const compiler = webpack(webpackConfig);
-
-    console.dir({ webpackConfig }, { depth: 20 });
-
-    return compiler.watch(
-      {
-        aggregateTimeout: 10,
-      },
-      (err, stats) => {
-        // Stats Object
-        // Print watch/build result here...
-        if (err) {
-          reportError(err, stats);
-          return;
-        }
-        if (stats) {
-          reportSuccess(stats);
-        }
-      }
-    );
+    return webpack(webpackConfig).watch(watcherOptions, watcherHandler);
   } catch (e) {
     reportError(e);
-    return null;
+    throw e;
   }
 };
 
 const commands = {
-  init: async ({ type, env, cliOptions, configsFiles, callOptions }: Options) => {
-    reportProgress({ message: 'loading node config', progress: 10 });
-    const base: StorybookConfig = await import(configsFiles.node.location);
-
-    const presets = getPresets(base, callOptions);
-
-    // recurse over all presets to create the main config
-    reportProgress({ message: 'applying presets', progress: 20 });
-    const storybookConfig = await applyPresets(presets, base);
-
-    const serverConfig = merge(storybookConfig.server, {
-      host: cliOptions.host,
-      port: cliOptions.port,
+  init: async (
+    type: ConfigPrefix,
+    { configFiles, cliOptions, callOptions, envOptions }: RunParams
+  ) => {
+    reportProgress({ message: 'loading config', progress: 1 });
+    const config = getConfig({
+      configFile: configFiles.node.location,
+      cliOptions,
+      callOptions,
+      envOptions,
     });
-    reportProgress({ message: 'creating config for server', progress: 20 });
 
-    const buildConfig: BuildConfig = await createBuildConfig(type, env, cliOptions, callOptions, [
-      createWebpackServePreset(type, serverConfig),
-      createStorybookEntryPreset(type, storybookConfig),
-      createWebpackReporterPreset(type, {
-        start: ({ state }) => reportProgress(state),
-        change: ({ state }) => reportProgress(state),
-        update: ({ state }) => reportProgress(state),
-        done: ({ state }) => reportProgress(state),
-        progress: ({ state }) => reportProgress(state),
-        allDone: ({ state }) => reportProgress(state),
-        beforeAllDone: ({ state }) => reportProgress(state),
-        afterAllDone: ({ state }) => reportProgress(state),
-      }),
-    ]);
+    const webpackConfig = await getWebpackConfig(type, config);
 
-    return watch(env, buildConfig);
+    // TODO: add watcher plugin stuff
+
+    watcher = await watch(webpackConfig);
+    return watcher;
   },
-  stop: async () => {},
+  stop: async () => {
+    return new Promise((res, rej) => {
+      if (watcher) {
+        watcher.close(() => res());
+      } else {
+        rej(new Error('watcher not active'));
+      }
+    });
+  },
 };
 
-type Command = keyof typeof commands;
-interface Options {
+interface CommandInitiator {
+  command: keyof typeof commands;
+  options: RunParams;
   type: ConfigPrefix;
-  env: EnvironmentType;
-  callOptions: CallOptions;
-  cliOptions: CliOptions;
-  configsFiles: ConfigsFiles;
 }
 
-process.on('message', ({ command, options }: { command: Command; options: Options }) => {
-  commands[command](options);
-  setTitle(`storybook ${command} ${options.type}`);
+process.on('message', async ({ command, options, type }: CommandInitiator) => {
+  try {
+    await commands[command](type, options);
+    reportSuccess({ message: 'command completed' });
+  } catch (e) {
+    reportError(e);
+  }
+  setTitle(`storybook ${type} ${command}`);
 });

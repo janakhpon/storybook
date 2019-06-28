@@ -3,22 +3,14 @@ import http from 'http';
 import fs from 'fs-extra';
 import express from 'express';
 import EventEmitter from 'eventemitter3';
-import { logger } from '@storybook/node-logger';
 import proxy from 'express-http-proxy';
 
-import { merge } from '../utils/merge';
+import { logger } from '@storybook/node-logger';
 
-import { createMiddleware } from '../middleware';
-import { applyPresets, getPresets } from '../presets';
+import { getConfig } from '../config/config';
 
-import {
-  CallOptions,
-  CliOptions,
-  ConfigsFiles,
-  Express,
-  ServerConfig,
-  StorybookConfig,
-} from '../types';
+import { Express, ServerConfig, Server } from '../types/server';
+import { Runner, RunParams } from '../types/runner';
 
 const serverFactory = async (options: ServerConfig) => {
   const { ssl, port } = options;
@@ -46,20 +38,12 @@ const serverFactory = async (options: ServerConfig) => {
 
 const createServer = async (options: ServerConfig, app: Express) => {
   const create = await serverFactory(options);
-  const server = create(app);
-  const { middleware } = options;
+  return create(app);
+};
 
-  if (Array.isArray(middleware)) {
-    await middleware.forEach(async item => {
-      if (typeof item === 'function') {
-        await item(app, server);
-      }
-    });
-  }
-  if (typeof middleware === 'function') {
-    await middleware(app, server);
-  }
+const createApp = async () => express();
 
+const listen = async (server: http.Server | https.Server, options: ServerConfig) => {
   return new Promise((res, rej) => {
     server.listen({ port: options.port, host: options.host }, (error?: Error) => {
       if (error) {
@@ -70,95 +54,112 @@ const createServer = async (options: ServerConfig, app: Express) => {
   });
 };
 
-const createApp = async () => express();
+const addProxyHandler = (app: Express, { host, port }: { host: string; port: number }) => {
+  app.use(
+    '/',
+    proxy(`http://${host}:${port}`, {
+      skipToNextHandlerFilter: ({ statusCode }) => statusCode === 404,
+    })
+  );
+};
 
-export const run = function run(
-  configsFiles: ConfigsFiles,
-  cliOptions: CliOptions,
-  callOptions: CallOptions
-) {
-  const runner = new EventEmitter();
+const addMiddlewareHandlers = async (
+  app: Express,
+  server: Server,
+  { middleware }: { middleware: ServerConfig['middleware'] }
+) => {
+  return Promise.all(
+    [].concat(middleware).map(async item => {
+      if (typeof item === 'function') {
+        return item(app, server);
+      }
+    })
+  );
+};
 
-  const start = async () => {
-    try {
-      runner.emit('progress', { message: 'loading node config', progress: 10 });
-      const base: StorybookConfig = await import(configsFiles.node.location);
+const add404Handler = (app: Express) => {
+  app.use('/', (req, res) => {
+    res.status(404);
 
-      const presets = getPresets(base, callOptions);
-
-      // recurse over all presets to create the main config
-      runner.emit('progress', { message: 'applying presets', progress: 20 });
-      const storybookConfig = await applyPresets(presets, base);
-
-      runner.emit('progress', { message: 'creating middleware', progress: 30 });
-      const middleware = createMiddleware(cliOptions, storybookConfig, callOptions);
-
-      // create config for running the web server
-      runner.emit('progress', { message: 'creating config for server', progress: 50 });
-
-      const serverConfig = merge(storybookConfig.server, {
-        host: cliOptions.host,
-        port: cliOptions.port,
-        ssl: cliOptions.https
-          ? {
-              ca: cliOptions.sslCa,
-              cert: cliOptions.sslCert,
-              key: cliOptions.sslKey,
-            }
-          : undefined,
-        middleware,
-      });
-
-      // create the node app & server
-      runner.emit('progress', { message: 'creating express app', progress: 80 });
-      const app = await createApp();
-
-      app.use(
-        '/',
-        proxy(`http://${serverConfig.host}:${serverConfig.devPorts.manager}`, {
-          skipToNextHandlerFilter: ({ statusCode }) => statusCode === 404,
-        })
-      );
-      app.use(
-        '/',
-        proxy(`http://${serverConfig.host}:${serverConfig.devPorts.preview}`, {
-          skipToNextHandlerFilter: ({ statusCode }) => statusCode === 404,
-        })
-      );
-
-      app.use('/', (req, res) => {
-        res.status(404);
-
-        // respond with html page
-        if (req.accepts('html')) {
-          res.send('Not found');
-          return;
-        }
-
-        // respond with json
-        if (req.accepts('json')) {
-          res.send({ error: 'Not found' });
-          return;
-        }
-
-        // default to plain-text. send()
-        res.type('txt').send('Not found');
-      });
-
-      runner.emit('progress', { message: 'creating server', progress: 99 });
-      const server = await createServer(serverConfig, app);
-
-      runner.emit('progress', { message: 'start listening', progress: 100 });
-      runner.emit('success', {
-        message: `server running : ${serverConfig.port}`,
-        details: [`${serverConfig.host}:${serverConfig.port}`],
-      });
-    } catch (e) {
-      runner.emit('failure', { message: e.message, detail: [e] });
+    // respond with html page
+    if (req.accepts('html')) {
+      res.send('Not found');
+      return;
     }
+
+    // respond with json
+    if (req.accepts('json')) {
+      res.send({ error: 'Not found' });
+      return;
+    }
+
+    // default to plain-text. send()
+    res.type('txt').send('Not found');
+  });
+};
+
+export const create = function create({
+  configFiles,
+  cliOptions,
+  callOptions,
+  envOptions,
+}: RunParams): Runner {
+  const runner = new EventEmitter();
+  let server: http.Server | https.Server;
+
+  return {
+    start: async () => {
+      try {
+        runner.emit('progress', { message: 'loading config', progress: 1 });
+
+        console.log('here');
+
+        const config = getConfig({
+          configFile: configFiles.node.location,
+          cliOptions,
+          callOptions,
+          envOptions,
+        });
+
+        const serverConfig = await config.server;
+
+        runner.emit('progress', { message: 'creating express app', progress: 80 });
+        const app = await createApp();
+        server = await createServer(serverConfig, app);
+
+        addProxyHandler(app, { host: serverConfig.host, port: serverConfig.devPorts.manager });
+        addProxyHandler(app, { host: serverConfig.host, port: serverConfig.devPorts.preview });
+        add404Handler(app);
+
+        await addMiddlewareHandlers(app, server, { middleware: serverConfig.middleware });
+
+        await listen(server, serverConfig);
+
+        runner.emit('success', {
+          message: `server running : ${serverConfig.port}`,
+          details: [`${serverConfig.host}:${serverConfig.port}`],
+        });
+      } catch (e) {
+        runner.emit('failure', { message: e.message, detail: [e] });
+        throw e;
+      }
+    },
+    stop: async () => {
+      return Promise.race([
+        new Promise<void>((res, rej) => {
+          if (server && server.listening) {
+            server.close(() => {
+              res();
+            });
+          } else {
+            rej(new Error('server not listening'));
+          }
+        }),
+        new Promise<void>((res, rej) => {
+          setTimeout(() => rej(new Error('timout closing server')), 1000);
+        }),
+      ]);
+    },
+    listen: (...args) => runner.on(...args),
   };
-
-  start();
-
-  return runner;
 };

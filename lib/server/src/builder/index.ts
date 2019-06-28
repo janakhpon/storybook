@@ -3,44 +3,18 @@ import { promisify } from 'util';
 import { fork, ChildProcess } from 'child_process';
 import path from 'path';
 
-import { State } from 'webpackbar';
 import EventEmitter from 'eventemitter3';
 import { stripIndent } from 'common-tags';
 
-import { getStorybookCachePath } from '@storybook/config';
+import { getCacheDir } from '@storybook/config';
 
-import { ConfigPrefix, EnvironmentType, CliOptions, ConfigsFiles, CallOptions } from '../types';
+import { CreateParams, RunParams, Runner, Event } from '../types/runner';
 
-const cacheDir = getStorybookCachePath();
+const cacheDir = getCacheDir();
 
 const appendFile = promisify(fs.appendFile);
 
-interface RunParams {
-  command: string;
-  type: ConfigPrefix;
-  env: EnvironmentType;
-  cliOptions: CliOptions;
-  configsFiles: ConfigsFiles;
-  callOptions: CallOptions;
-}
-
-interface ProgressEvent {
-  type: 'progress';
-  data: State;
-}
-interface SuccessEvent {
-  type: 'success';
-  data: any;
-}
-interface FailureEvent {
-  type: 'failure';
-  err: Error;
-  data: any;
-}
-
-type Event = ProgressEvent | SuccessEvent | FailureEvent;
-
-const createLog = async (sub: ChildProcess, { command, type }: RunParams) => {
+const createLog = async (sub: ChildProcess, { command, type }: CreateParams) => {
   const logFile = path.join(cacheDir, `./${type}-${command}.log`);
 
   await appendFile(
@@ -58,41 +32,54 @@ const createLog = async (sub: ChildProcess, { command, type }: RunParams) => {
   sub.stderr.pipe(log);
 };
 
-const run = function run(runParams: RunParams): EventEmitter {
+const create = function create(createParams: CreateParams, runParams: RunParams): Runner {
+  let process: ChildProcess;
   const runner = new EventEmitter();
+  const { command, type } = createParams;
 
-  const start = async ({
-    command,
-    type,
-    env,
-    cliOptions,
-    configsFiles,
-    callOptions,
-  }: RunParams) => {
-    const sub = fork(path.join(__dirname, 'commands', command), [], {
-      silent: true,
-    });
+  return {
+    start: async () => {
+      process = fork(path.join(__dirname, 'commands', command), [], {
+        silent: true,
+      });
 
-    await createLog(sub, runParams);
-    sub.send({ command: 'init', options: { type, env, cliOptions, configsFiles, callOptions } });
+      await createLog(process, createParams);
 
-    sub.on('message', (event: Event) => {
-      if (event.type === 'progress') {
-        runner.emit('progress', event.data);
-      } else if (event.type === 'success') {
-        runner.emit('success', event.data);
-      } else if (event.type === 'failure') {
-        runner.emit('failure', event.data);
+      process.on('message', (event: Event) => {
+        runner.emit(event.type, event.data);
+      });
+
+      const result = process.send({
+        command: 'init',
+        options: runParams,
+        type,
+      });
+
+      if (!result) {
+        throw new Error(`could not start ${command} for ${type}`);
       }
-    });
-  };
-  // TODO: maybe filter env passed into runner
-  start(runParams);
+    },
+    stop: async () =>
+      new Promise((resolve, reject) => {
+        if (process) {
+          process.kill();
 
-  return runner;
+          process.on('exit', exitCode => {
+            if (exitCode === 0) {
+              resolve();
+            } else {
+              reject(new Error('non 0 error code'));
+            }
+          });
+        } else {
+          reject(new Error('process not running'));
+        }
+      }),
+    listen: (...args) => runner.on(...args),
+  };
 };
 
-const fake = function fake(): EventEmitter {
+const fake = function fake(): Runner {
   const runner = new EventEmitter();
   let count = 0;
   const interval = setInterval(() => {
@@ -111,7 +98,11 @@ const fake = function fake(): EventEmitter {
     }
   }, 50);
 
-  return runner;
+  return {
+    start: async () => {},
+    stop: async () => {},
+    listen: (...args) => runner.on(...args),
+  };
 };
 
-export { run, fake };
+export { create, fake };

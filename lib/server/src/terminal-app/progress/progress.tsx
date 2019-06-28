@@ -2,7 +2,7 @@ import React, { Fragment } from 'react';
 import { Box, Color } from 'ink';
 import Spinner from 'ink-spinner';
 
-import { Status as TStatus } from '../types';
+import { Status as TStatus } from '../../types/runner';
 
 interface CompletedProps {
   title: string;

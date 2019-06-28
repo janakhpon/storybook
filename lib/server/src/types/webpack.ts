@@ -1,6 +1,14 @@
 import { RawSourceMap } from 'source-map';
 
-import { Compiler, Module } from 'webpack';
+import { Configuration, Compiler, Module } from 'webpack';
+import { Config } from './config';
+
+export type WebpackConfig = Configuration;
+
+export type WebpackConfigMerger = (
+  webpackConfig: Configuration,
+  StorybookConfig: Config
+) => Configuration | Promise<Configuration>;
 
 export interface Loader extends Function {
   (this: LoaderContext, source: string | Buffer, sourceMap?: RawSourceMap):

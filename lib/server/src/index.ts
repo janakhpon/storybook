@@ -1,37 +1,48 @@
+import setTitle from 'node-bash-title';
+
 import { logger } from '@storybook/node-logger';
 
-import setTitle from 'node-bash-title';
 import { cleanCliOptions } from './utils/cli';
+import { cleanEnvOptions } from './utils/env';
 
 import * as terminalApp from './terminal-app/app';
 import * as builder from './builder/index';
-import * as server from './http/http';
+import * as http from './http/http';
 
-import { StartOptions, EnvironmentType } from './types';
+import { StartOptions } from './types/cli';
 
 // main function
-const start = async ({ configsFiles, callOptions, cliOptions: cliOptionsRaw }: StartOptions) => {
+const start = async ({ configFiles, callOptions, cliOptions: cliOptionsRaw }: StartOptions) => {
   logger.warn('experimental mono config mode enabled');
 
   setTitle('storybook');
 
-  const env: EnvironmentType = 'development';
+  // filter the env options
+  const envOptions = cleanEnvOptions(process.env);
 
   // filter the cli options
   const cliOptions = cleanCliOptions(cliOptionsRaw);
 
+  const manager = builder.create(
+    {
+      command: 'watch',
+      type: 'manager',
+    },
+    {
+      envOptions,
+      cliOptions,
+      configFiles,
+      callOptions,
+    }
+  );
+  const preview = builder.fake();
+
+  const server = http.create({ configFiles, cliOptions, callOptions, envOptions });
+
   terminalApp.run({
-    server: () => server.run(configsFiles, cliOptions, callOptions),
-    manager: () =>
-      builder.run({
-        command: 'watch',
-        type: 'manager',
-        env,
-        cliOptions,
-        configsFiles,
-        callOptions,
-      }),
-    preview: () => builder.fake(),
+    server,
+    manager,
+    preview,
   });
 };
 

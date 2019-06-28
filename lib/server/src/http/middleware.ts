@@ -5,21 +5,18 @@ import fs from 'fs-extra';
 
 import { progress, logger } from '@storybook/node-logger';
 
-import {
-  Express,
-  StaticConfig,
-  Middleware,
-  CliOptions,
-  CallOptions,
-  StorybookConfig,
-} from './types';
+import { Express, StaticConfig, Middleware } from '../types/server';
+import { CliOptions, CallOptions } from '../types/cli';
+import { ConfigProperties } from '../types/config';
 
 const faviconLocation = (location: string) => path.resolve(location, 'favicon.ico');
 const containsFavicon = async (location: string) => fs.pathExists(faviconLocation(location));
 const defaultFaviconLocation = faviconLocation(path.join(__dirname, '..', 'assets'));
 
-const staticMiddleware = (config: StaticConfig) => async (app: Express) => {
-  const list = Object.entries(config);
+const staticMiddleware = (config: StaticConfig[]) => async (app: Express) => {
+  const list = config.reduce((acc, i) => {
+    return acc.concat(Object.entries(i));
+  }, []);
 
   const hasCustomFavicon = await list.reduce(async (acc, [route, location]) => {
     const fullLocation = path.resolve(location);
@@ -29,7 +26,7 @@ const staticMiddleware = (config: StaticConfig) => async (app: Express) => {
     } else {
       // TODO should be part of server
       progress.emit('server', {
-        message: `=> Loading static files from: "${location}", hosting them at "${route}"`,
+        message: `adding static files from: "${location}", routing at "${route}"`,
         details: [location, route],
       });
     }
@@ -51,16 +48,13 @@ const staticMiddleware = (config: StaticConfig) => async (app: Express) => {
 
 const createStaticPathsConfig = (
   fromCli: string[] = [],
-  fromConfig: StaticConfig = {}
-): StaticConfig => ({
-  ...fromConfig,
-  ...fromCli.reduce((acc, p) => ({ ...acc, '/': p }), {}),
-});
+  fromConfig: StaticConfig[] = []
+): StaticConfig[] => [...fromConfig, fromCli.reduce((acc, p) => ({ ...acc, '/': p }), {})];
 
 // middleware has access to the app & server, and can add http handlers and routes
 const createMiddleware = async (
   fromCli: CliOptions,
-  fromConfig: StorybookConfig,
+  fromConfig: ConfigProperties,
   addition: CallOptions
 ): Promise<Middleware[]> => {
   const staticContentConfig = createStaticPathsConfig(

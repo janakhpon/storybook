@@ -1,7 +1,7 @@
 import { RawSourceMap } from 'source-map';
 import { transform, Result } from './babel-plugin';
 
-import { Loader } from '../utils/webpack-loader-types';
+import { Loader } from '../../types/webpack';
 
 const managerEntryloader = function managerEntryloader(
   source: string,

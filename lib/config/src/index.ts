@@ -61,7 +61,10 @@ export const getConfigPath = async (fileName: FileName): Promise<string> => {
   return fullPath || undefined;
 };
 
-export const getStorybookCachePath = () => findCacheDir({ name: 'storybook' });
+export const getCacheDir = () => findCacheDir({ name: 'storybook' });
+
+export const getCoreDir = () =>
+  path.join(path.dirname(require.resolve('@storybook/core/package.json')), 'dist');
 
 export const getStorybookConfigPath = async () => {
   const configFileName: FileName = 'storybook.config.js';
@@ -100,7 +103,7 @@ export const getStorybookConfigs = async () => {
   const file = await getStorybookConfigPath();
 
   if (file) {
-    const cacheDir = getStorybookCachePath();
+    const cacheDir = getCacheDir();
 
     const config = {
       manager: ['theme', 'managerInit'],
